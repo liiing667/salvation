@@ -4,8 +4,10 @@ import com.shapesecurity.salvation2.Values.Scheme;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ParserTest extends TestBase {
@@ -650,6 +652,118 @@ public class ParserTest extends TestBase {
 	@Test(expected = IllegalArgumentException.class)
 	public void testAssertsNoCommas() {
 		Policy.parseSerializedCSP("a ,", Policy.PolicyErrorConsumer.ignored);
+	}
+
+	@Test
+	public void testAudit() {
+		// Default ports are implied by the scheme and can be dropped
+		List<AuditDiagnostic> findings = audit("script-src http://example.com:80/a");
+		assertEquals(1, findings.size());
+		AuditDiagnostic defaultPort = findings.get(0);
+		assertEquals(AuditDiagnostic.DEFAULT_PORT, defaultPort.code);
+		assertEquals(Policy.Severity.Warning, defaultPort.severity);
+		assertEquals(0, defaultPort.directiveIndex);
+		assertEquals(0, defaultPort.valueIndex);
+		assertEquals("script-src", defaultPort.directive);
+		assertEquals("http://example.com:80/a", defaultPort.value);
+		assertEquals("http://example.com/a", defaultPort.suggestion);
+
+		// Double slashes in a path are collapsed by real URLs
+		findings = audit("img-src http://example.com/a//b");
+		assertEquals(1, findings.size());
+		assertEquals(AuditDiagnostic.PATH_NORMALIZATION, findings.get(0).code);
+		assertEquals("http://example.com/a/b", findings.get(0).suggestion);
+
+		// Dot segments are resolved away by real URLs
+		findings = audit("img-src http://example.com/a/./b/../c");
+		assertEquals(1, findings.size());
+		AuditDiagnostic dots = findings.get(0);
+		assertEquals(AuditDiagnostic.PATH_NORMALIZATION, dots.code);
+		assertEquals(Policy.Severity.Warning, dots.severity);
+		assertEquals("http://example.com/a/c", dots.suggestion);
+
+		// Leading dot-segments collapse to the root
+		findings = audit("img-src http://example.com/../a");
+		assertEquals(1, findings.size());
+		assertEquals("http://example.com/a", findings.get(0).suggestion);
+
+		// A host-source which combines a default port with an un-normalized path yields one finding carrying one suggestion
+		findings = audit("img-src http://example.com:80/a//b");
+		assertEquals(1, findings.size());
+		assertEquals(AuditDiagnostic.PATH_NORMALIZATION, findings.get(0).code);
+		assertEquals("http://example.com/a/b", findings.get(0).suggestion);
+
+		// 'none' makes every other source-expression unreachable
+		findings = Policy.parseSerializedCSP("default-src 'none' http://example.com", Policy.PolicyErrorConsumer.ignored).audit();
+		assertEquals(1, findings.size());
+		AuditDiagnostic unreachable = findings.get(0);
+		assertEquals(AuditDiagnostic.UNREACHABLE_SOURCE, unreachable.code);
+		assertEquals(Policy.Severity.Error, unreachable.severity);
+		assertEquals(1, unreachable.valueIndex);
+
+		// A host subsumed by a scheme-source in the same directive is redundant
+		findings = audit("default-src http: http://example.com");
+		assertEquals(1, findings.size());
+		assertEquals(AuditDiagnostic.REDUNDANT_SOURCE, findings.get(0).code);
+		assertEquals(1, findings.get(0).valueIndex);
+		assertEquals(Policy.Severity.Warning, findings.get(0).severity);
+
+		// A wildcard host subsumes its more specific hosts
+		findings = audit("default-src https://*.example.com https://www.example.com/a");
+		assertEquals(1, findings.size());
+		assertEquals(AuditDiagnostic.REDUNDANT_SOURCE, findings.get(0).code);
+		assertEquals(1, findings.get(0).valueIndex);
+
+		// A path-prefix source subsumes its descendants
+		findings = audit("default-src http://example.com/a/ http://example.com/a/b");
+		assertEquals(1, findings.size());
+		assertEquals(AuditDiagnostic.REDUNDANT_SOURCE, findings.get(0).code);
+
+		// The audit is read-only: serialization is untouched even for problematic sources
+		String serialized = "default-src http://example.com:80/a//./b";
+		Policy policy = Policy.parseSerializedCSP(serialized, throwIfPolicyError);
+		assertFalse(policy.audit().isEmpty());
+		assertEquals(serialized, policy.toString());
+		assertEquals(policy.audit(), policy.audit());
+
+		// Legal hosts, port wildcards, relative sources, non-default ports and ordinary paths stay clean
+		assertTrue(audit("default-src http://example.com/a/b/ https://example.com:* example.com example.com:8080").isEmpty());
+
+		// A wildcard port is never a default port, and relative sources are never second-guessed
+		assertTrue(audit("default-src http://wildcard.example.com:* https://other.example.com").isEmpty());
+
+		// Sources which merely overlap (neither contains the other) do not flag each other
+		assertTrue(audit("default-src http://example.com/a http://example.com/b/").isEmpty());
+
+		// Relative sources with odd-looking paths are left for the document origin to interpret
+		assertTrue(audit("default-src example.com/a//b example.com:80").isEmpty());
+
+		// frame-ancestors host-sources are audited too
+		findings = audit("frame-ancestors http://example.com:80");
+		assertEquals(1, findings.size());
+		assertTrue(findings.stream().anyMatch(f -> f.code.equals(AuditDiagnostic.DEFAULT_PORT)));
+
+		// Directives without host-sources have nothing to audit
+		assertTrue(audit("sandbox allow-scripts; upgrade-insecure-requests; report-to endpoint").isEmpty());
+
+		// PolicyList audits keep policy indices and single-policy audits report policy index -1
+		PolicyList list = Policy.parseSerializedCSPList(
+				"default-src 'none' http://example.com, default-src http://example.com/../a",
+				Policy.PolicyListErrorConsumer.ignored);
+		findings = list.audit();
+		assertEquals(2, findings.size());
+		assertEquals(0, findings.get(0).policyIndex);
+		assertEquals(AuditDiagnostic.UNREACHABLE_SOURCE, findings.get(0).code);
+		assertEquals(1, findings.get(1).policyIndex);
+		assertEquals(AuditDiagnostic.PATH_NORMALIZATION, findings.get(1).code);
+		PolicyList listWithParseErrors = Policy.parseSerializedCSPList(
+				"default-src 'none' http://example.com", Policy.PolicyListErrorConsumer.ignored);
+		assertEquals(1, listWithParseErrors.audit().size());
+		assertEquals(-1, Policy.parseSerializedCSP("default-src http://example.com:80", throwIfPolicyError).audit().get(0).policyIndex);
+	}
+
+	private List<AuditDiagnostic> audit(String serialized) {
+		return Policy.parseSerializedCSP(serialized, throwIfPolicyError).audit();
 	}
 
 	private static void roundTrips(String input, PolicyError... errors) {

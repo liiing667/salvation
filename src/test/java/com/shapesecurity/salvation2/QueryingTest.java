@@ -1476,6 +1476,28 @@ public class QueryingTest extends TestBase {
 
 
 
+	@Test
+	public void testAuditDoesNotAffectQuerying() {
+		// The audit flags sources which real requests resolve differently, but must not change how they match
+		PolicyInOrigin p = parse(
+				"img-src http://example.com:80/a//./b; script-src http://example.com/a/ http://example.com/a/b",
+				"http://example.com");
+
+		assertFalse(p.policy.audit().isEmpty());
+
+		// Matching semantics are exactly those of the un-audited policy: the literal path is still used
+		assertTrue(p.allowsImageFromSource(URI.parseURI("http://example.com/a//./b").orElse(null)));
+		assertFalse(p.allowsImageFromSource(URI.parseURI("http://example.com/a/b").orElse(null)));
+
+		// The redundant script source still participates in matching
+		assertTrue(p.allowsScriptFromSource(URI.parseURI("http://example.com/a/b").orElse(null)));
+		assertTrue(p.allowsScriptFromSource(URI.parseURI("http://example.com/a/c").orElse(null)));
+
+		// Legal hosts, port wildcards and relative sources remain both queryable and audit-clean
+		Policy clean = parse("default-src http://example.com https://example.com:* example.com");
+		assertTrue(clean.audit().isEmpty());
+	}
+
 	private Policy parse(String policy) {
 		return Policy.parseSerializedCSP(policy, throwIfPolicyError);
 	}

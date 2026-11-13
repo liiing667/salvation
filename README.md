@@ -96,6 +96,24 @@ System.out.println(policy.toString());
 policy.toString();
 ```
 
+### Audit a Policy
+
+The parse-time error consumer reports grammar problems, but some host-sources parse fine yet still diverge from the requests browsers actually issue: an explicitly written default port (`http://example.com:80`), or paths containing double slashes and `.`/`..` segments which URL resolution changes. Other sources are unreachable (for example anything alongside `'none'`) or fully redundant because a broader source in the same directive already covers them.
+
+`audit()` is a strictly read-only analysis: it never rewrites the policy, so querying and serialization keep their exact original behavior. Each finding carries a stable `code`, a `severity`, the `directiveIndex`/`valueIndex` position, the offending `directive`/`value`, an explanatory `message`, and where possible a normalization `suggestion`.
+
+```java
+Policy policy = Policy.parseSerializedCSP("script-src http: http://example.com:80/a//./b", Policy.PolicyErrorConsumer.ignored);
+for (AuditDiagnostic diagnostic : policy.audit()) {
+  System.out.println(diagnostic.code + " at directive " + diagnostic.directiveIndex + " value " + diagnostic.valueIndex
+    + " (" + diagnostic.value + "): " + diagnostic.message
+    + (diagnostic.suggestion == null ? "" : " — use " + diagnostic.suggestion));
+}
+// PolicyList#audit() does the same across every policy, additionally reporting the policyIndex.
+```
+
+Stable codes are exposed as constants on `AuditDiagnostic`: `DEFAULT_PORT` (`host-default-port`), `PATH_NORMALIZATION` (`host-path-normalization`), `REDUNDANT_SOURCE` (`redundant-source`), and `UNREACHABLE_SOURCE` (`unreachable-source`). Legal hosts, port wildcards (`:*`) and relative (scheme-less) sources are intentionally left alone.
+
 ## Transpiling to JavaScript
 To reduce the overhead of running this library, it will now automatically be transpiled to JS as part of the compile goal by using [TeaVM](https://teavm.org/). It can then be placed on any webpage to be used as static JavaScript, thus alleviating the need for a JRE.
 

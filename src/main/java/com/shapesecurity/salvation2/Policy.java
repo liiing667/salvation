@@ -507,6 +507,21 @@ public class Policy {
 		return Optional.ofNullable(this.fetchDirectives.get(kind));
 	}
 
+	// Read-only audit
+
+	// Produces explainable diagnostics for host-sources which can diverge from real requests (default ports,
+	// un-normalized paths) and for sources which are unreachable or redundant within their directive.
+	// The analysis is strictly read-only: it never rewrites this policy, and querying and serialization are unaffected.
+	@Nonnull
+	public List<AuditDiagnostic> audit() {
+		return Collections.unmodifiableList(PolicyAuditor.audit(this, -1));
+	}
+
+	@Nonnull
+	List<NamedDirectiveView> getNamedDirectives() {
+		return Collections.unmodifiableList(this.directives);
+	}
+
 
 	// High-level querying
 
@@ -980,7 +995,7 @@ public class Policy {
 	}
 
 	// https://w3c.github.io/webappsec-csp/#scheme-part-match
-	private static boolean schemePartMatches(String A, String B) {
+	static boolean schemePartMatches(String A, String B) {
 		// Assumes inputs are already lowcased
 		return A.equals(B)
 				|| A.equals("http") && B.equals("https")
@@ -1100,7 +1115,16 @@ public class Policy {
 	}
 
 
-	private static class NamedDirective {
+	// Read-only view of a directive as it appears in the serialized policy, used by the auditor.
+	interface NamedDirectiveView {
+		@Nonnull
+		String getLowcaseName();
+
+		@Nonnull
+		Directive getDirective();
+	}
+
+	private static class NamedDirective implements NamedDirectiveView {
 		final String name;
 		final Directive directive;
 		final String lowcaseName;
@@ -1109,6 +1133,18 @@ public class Policy {
 			this.name = name;
 			this.directive = directive;
 			this.lowcaseName = this.name.toLowerCase(Locale.ENGLISH);
+		}
+
+		@Nonnull
+		@Override
+		public String getLowcaseName() {
+			return this.lowcaseName;
+		}
+
+		@Nonnull
+		@Override
+		public Directive getDirective() {
+			return this.directive;
 		}
 	}
 
